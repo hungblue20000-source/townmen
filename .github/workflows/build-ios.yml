@@ -1,0 +1,81 @@
+name: Build Townsmen iPhone
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract source
+        run: |
+          unzip -q "TownsmenRebuilt-iOS 2.zip" -d source
+
+      - name: Fix header filename
+        run: |
+          cd source/TownsmenRebuilt-iOS
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("TownsmenRebuilt/Core/ReconstructedProduction.cpp")
+          text = p.read_text()
+          text = text.replace(
+              '#include "reconstructed_production.hpp"',
+              '#include "ReconstructedProduction.hpp"'
+          )
+          p.write_text(text)
+          PY
+
+      - name: Test C++ core
+        run: |
+          cd source/TownsmenRebuilt-iOS
+          bash tools/run_core_tests.sh
+          clang++ -std=c++17 -Wall -Wextra -pedantic \
+            -c TownsmenRebuilt/Core/ReconstructedProduction.cpp \
+            -o "$RUNNER_TEMP/production.o"
+
+      - name: Build for iPhone
+        run: |
+          set -o pipefail
+          cd source/TownsmenRebuilt-iOS
+          xcodebuild \
+            -project TownsmenRebuilt.xcodeproj \
+            -target TownsmenRebuilt \
+            -configuration Release \
+            -sdk iphoneos \
+            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/output" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CLANG_ENABLE_MODULES=YES \
+            CLANG_ENABLE_OBJC_ARC=YES \
+            'OTHER_LDFLAGS=$(inherited) -framework UIKit -framework Foundation -framework SpriteKit' \
+            build 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Package unsigned IPA
+        run: |
+          test -f output/TownsmenRebuilt.app/TownsmenRebuilt
+          mkdir -p package/Payload
+          cp -R output/TownsmenRebuilt.app package/Payload/
+          cd package
+          zip -qry ../TownsmenRebuilt-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TownsmenRebuilt-unsigned
+          path: TownsmenRebuilt-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
